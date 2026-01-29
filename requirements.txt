@@ -1,0 +1,9 @@
+# Webhook-repo dependencies for Techstax assignment
+# Flask: web framework for webhook endpoint and API
+flask>=3.0.0
+# PyMongo: MongoDB driver for storing webhook events
+pymongo>=4.6.0
+# python-dotenv: load environment variables from .env (for MongoDB URI, secrets)
+python-dotenv>=1.0.0
+# gunicorn: production WSGI server (for deployment on Render, Railway, etc.)
+gunicorn>=21.0.0

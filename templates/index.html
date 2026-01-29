@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub Webhook Events</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+            font-size: 14px;
+        }
+
+        .status {
+            padding: 15px 30px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 14px;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #28a745;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .events-container {
+            padding: 30px;
+            min-height: 400px;
+        }
+
+        .event-item {
+            padding: 20px;
+            margin-bottom: 15px;
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            border-radius: 6px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .event-item:hover {
+            transform: translateX(4px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+        }
+
+        .event-item.push {
+            border-left-color: #28a745;
+        }
+
+        .event-item.pull_request {
+            border-left-color: #ffc107;
+        }
+
+        .event-item.merge {
+            border-left-color: #dc3545;
+        }
+
+        .event-text {
+            font-size: 16px;
+            line-height: 1.6;
+            color: #333;
+        }
+
+        .event-meta {
+            margin-top: 8px;
+            font-size: 13px;
+            color: #6c757d;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #6c757d;
+        }
+
+        .empty-state svg {
+            width: 80px;
+            height: 80px;
+            margin-bottom: 20px;
+            opacity: 0.5;
+        }
+
+        .empty-state h3 {
+            font-size: 20px;
+            margin-bottom: 10px;
+            color: #495057;
+        }
+
+        .empty-state p {
+            font-size: 14px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #6c757d;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>GitHub Webhook Events</h1>
+            <p>Real-time activity from action-repo</p>
+        </div>
+
+        <div class="status">
+            <div>
+                <span class="status-indicator"></span>
+                <span id="status-text">Polling every 15 seconds...</span>
+            </div>
+            <div id="event-count">0 events</div>
+        </div>
+
+        <div class="events-container" id="events-container">
+            <div class="loading">Loading events...</div>
+        </div>
+    </div>
+
+    <script>
+        // Track latest timestamp to avoid showing duplicate events
+        let latestTimestamp = null;
+        let events = [];
+
+        /**
+         * Format timestamp from "YYYY-MM-DD HH:MM:SS UTC" to "DDth Month YYYY - HH:MM AM/PM UTC"
+         * Example: "2021-04-01 21:30:00 UTC" → "1st April 2021 - 9:30 PM UTC"
+         */
+        function formatTimestamp(timestampStr) {
+            if (!timestampStr) return '';
+
+            // Parse the timestamp string
+            const [datePart, timePart] = timestampStr.replace(' UTC', '').split(' ');
+            const [year, month, day] = datePart.split('-').map(Number);
+            const [hour, minute, second] = timePart.split(':').map(Number);
+
+            // Create date object (UTC)
+            const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+
+            // Format day with ordinal suffix (1st, 2nd, 3rd, 4th, etc.)
+            const dayNum = date.getUTCDate();
+            const daySuffix = getOrdinalSuffix(dayNum);
+
+            // Month names
+            const monthNames = [
+                'January', 'February', 'March', 'April', 'May', 'June',
+                'July', 'August', 'September', 'October', 'November', 'December'
+            ];
+            const monthName = monthNames[date.getUTCMonth()];
+
+            // Format time (12-hour with AM/PM)
+            let hours = date.getUTCHours();
+            const minutes = date.getUTCMinutes();
+            const ampm = hours >= 12 ? 'PM' : 'AM';
+            hours = hours % 12;
+            hours = hours ? hours : 12; // 0 should be 12
+            const minutesStr = minutes < 10 ? '0' + minutes : minutes;
+
+            return `${dayNum}${daySuffix} ${monthName} ${date.getUTCFullYear()} - ${hours}:${minutesStr} ${ampm} UTC`;
+        }
+
+        /**
+         * Get ordinal suffix for day (1st, 2nd, 3rd, 4th, etc.)
+         */
+        function getOrdinalSuffix(day) {
+            if (day >= 11 && day <= 13) {
+                return 'th';
+            }
+            switch (day % 10) {
+                case 1: return 'st';
+                case 2: return 'nd';
+                case 3: return 'rd';
+                default: return 'th';
+            }
+        }
+
+        /**
+         * Format event text according to assignment requirements
+         */
+        function formatEventText(event) {
+            const author = event.author || 'Unknown';
+            const timestamp = formatTimestamp(event.timestamp);
+            const fromBranch = event.from_branch || '';
+            const toBranch = event.to_branch || '';
+
+            switch (event.action) {
+                case 'PUSH':
+                    return `"${author}" pushed to "${toBranch}" on ${timestamp}`;
+                case 'PULL_REQUEST':
+                    return `"${author}" submitted a pull request from "${fromBranch}" to "${toBranch}" on ${timestamp}`;
+                case 'MERGE':
+                    return `"${author}" merged branch "${fromBranch}" to "${toBranch}" on ${timestamp}`;
+                default:
+                    return `${author} performed ${event.action} on ${timestamp}`;
+            }
+        }
+
+        /**
+         * Render events to the DOM
+         */
+        function renderEvents() {
+            const container = document.getElementById('events-container');
+            const countElement = document.getElementById('event-count');
+
+            if (events.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M9 12h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
+                        </svg>
+                        <h3>No events yet</h3>
+                        <p>Webhook events will appear here when GitHub actions occur</p>
+                    </div>
+                `;
+                countElement.textContent = '0 events';
+                return;
+            }
+
+            // Sort events by timestamp (newest first)
+            const sortedEvents = [...events].sort((a, b) => {
+                return b.timestamp.localeCompare(a.timestamp);
+            });
+
+            container.innerHTML = sortedEvents.map(event => {
+                const actionClass = event.action.toLowerCase().replace('_', '-');
+                return `
+                    <div class="event-item ${actionClass}">
+                        <div class="event-text">${formatEventText(event)}</div>
+                        <div class="event-meta">Request ID: ${event.request_id}</div>
+                    </div>
+                `;
+            }).join('');
+
+            countElement.textContent = `${events.length} event${events.length !== 1 ? 's' : ''}`;
+        }
+
+        /**
+         * Fetch events from API
+         */
+        async function fetchEvents() {
+            try {
+                const statusText = document.getElementById('status-text');
+                statusText.textContent = 'Fetching events...';
+
+                // Build API URL with since parameter to avoid duplicates
+                let url = '/api/events';
+                if (latestTimestamp) {
+                    url += `?since=${encodeURIComponent(latestTimestamp)}`;
+                }
+
+                const response = await fetch(url);
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    // Add new events to our list (avoid duplicates by checking request_id)
+                    const existingIds = new Set(events.map(e => e.request_id));
+                    const newEvents = data.events.filter(e => !existingIds.has(e.request_id));
+                    
+                    events = [...events, ...newEvents];
+
+                    // Update latest timestamp for next poll
+                    if (data.latest_timestamp) {
+                        latestTimestamp = data.latest_timestamp;
+                    }
+
+                    renderEvents();
+                    statusText.textContent = 'Polling every 15 seconds...';
+                } else {
+                    console.error('API error:', data.message);
+                    statusText.textContent = 'Error fetching events';
+                }
+            } catch (error) {
+                console.error('Fetch error:', error);
+                document.getElementById('status-text').textContent = 'Connection error';
+            }
+        }
+
+        // Initial fetch
+        fetchEvents();
+
+        // Poll every 15 seconds
+        setInterval(fetchEvents, 15000);
+    </script>
+</body>
+</html>

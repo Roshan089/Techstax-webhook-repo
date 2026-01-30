@@ -5,6 +5,7 @@ Handles connecting to MongoDB and provides helper functions
 for storing and retrieving webhook events.
 """
 
+from bson import ObjectId
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
@@ -81,43 +82,64 @@ def insert_event(event_data):
     return result.inserted_id
 
 
-def get_events(since_timestamp=None, limit=100):
+def get_events(since_timestamp=None, after_id=None, limit=100):
     """
     Retrieve webhook events from MongoDB.
     
     Args:
         since_timestamp (str, optional): Only return events after this timestamp
-                                        (UTC datetime string). Used to avoid
-                                        showing duplicate events in UI refresh.
+                                        (UTC datetime string). Deprecated for
+                                        polling; use after_id to avoid missing events.
+        after_id (str, optional): MongoDB _id (string). Only return events inserted
+                                  after this id. Uses insertion order so no events
+                                  are missed when GitHub sends out-of-order timestamps.
         limit (int): Maximum number of events to return (default: 100).
     
     Returns:
-        list: List of event documents, sorted by timestamp (newest first).
-              Each document includes all MongoDB schema fields plus _id.
-    
-    Raises:
-        ConnectionFailure: If MongoDB connection fails.
+        tuple: (events list, latest_id str or None).
+               events: sorted by timestamp (newest first). Each has _id as string.
+               latest_id: the _id of the newest event in the batch (for next poll).
     """
     collection = get_events_collection()
     
-    # Build query: if since_timestamp provided, filter by timestamp
-    query = {}
-    if since_timestamp:
-        # MongoDB string comparison works for ISO-like datetime strings
-        # We store as "YYYY-MM-DD HH:MM:SS UTC", so we can compare strings
-        query["timestamp"] = {"$gt": since_timestamp}
+    if after_id:
+        # Cursor-based: get events inserted after this _id (never miss events)
+        try:
+            query = {"_id": {"$gt": ObjectId(after_id)}}
+        except Exception:
+            query = {}
+        cursor = collection.find(query).sort("_id", 1).limit(limit)  # insertion order
+        events = list(cursor)
+        # Sort by timestamp for display (newest first)
+        events.sort(key=lambda e: (e.get("timestamp") or "", e["_id"]), reverse=True)
+        latest_id = str(max(e["_id"] for e in events)) if events else None
+    else:
+        # Initial load or legacy: get most recent events by timestamp
+        query = {}
+        if since_timestamp:
+            query["timestamp"] = {"$gt": since_timestamp}
+        cursor = collection.find(query).sort([
+            ("timestamp", -1),
+            ("_id", -1)
+        ]).limit(limit)
+        events = list(cursor)
+        # latest_id = max _id in batch so next poll gets only newer insertions
+        latest_id = str(max(e["_id"] for e in events)) if events else None
     
-    # Sort by timestamp descending (newest first), then by _id as tiebreaker
-    cursor = collection.find(query).sort([
-        ("timestamp", -1),  # Newest first
-        ("_id", -1)         # Tiebreaker for same timestamp
-    ]).limit(limit)
-    
-    # Convert cursor to list of dictionaries
-    events = list(cursor)
-    
-    # Convert ObjectId to string for JSON serialization
+    # Convert ObjectId to string for JSON
     for event in events:
         event["_id"] = str(event["_id"])
     
-    return events
+    return events, latest_id
+
+
+def delete_all_events():
+    """
+    Delete all events from the collection (for testing from 0 events).
+    
+    Returns:
+        int: Number of documents deleted.
+    """
+    collection = get_events_collection()
+    result = collection.delete_many({})
+    return result.deleted_count

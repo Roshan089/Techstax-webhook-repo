@@ -14,7 +14,7 @@ Deploy: use the same app; set MONGO_URI and GITHUB_WEBHOOK_SECRET in env.
 from flask import Flask, request, jsonify, render_template
 
 from config import MONGO_URI, MONGO_DB_NAME
-from db import insert_event, get_db, get_events
+from db import insert_event, get_db, get_events, delete_all_events
 from webhook_parser import parse_github_webhook
 
 # -----------------------------------------------------------------------------
@@ -37,6 +37,23 @@ def index():
 def health():
     """Simple health check for deployment platforms (e.g. Render, Railway)."""
     return {"status": "ok"}, 200
+
+
+@app.route("/clear-events")
+def clear_events():
+    """
+    Delete all events from MongoDB (for testing from 0 events).
+    Visit: http://127.0.0.1:5000/clear-events
+    """
+    try:
+        deleted = delete_all_events()
+        return jsonify({
+            "status": "success",
+            "message": f"Deleted {deleted} event(s). UI will show 0 events after refresh.",
+            "deleted_count": deleted,
+        }), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route("/test-db")
@@ -130,36 +147,32 @@ def api_events():
     API endpoint for UI to poll events from MongoDB.
     
     Query parameters:
-        - since (optional): UTC datetime string. Only return events after this timestamp.
-                          Used to avoid showing duplicate events in UI refresh window.
+        - after_id (optional): MongoDB _id (string). Return only events inserted
+                               after this id. Uses insertion order so no events
+                               are missed when GitHub sends out-of-order timestamps.
+        - since (optional): Legacy; UTC timestamp. Prefer after_id for polling.
         - limit (optional): Maximum number of events to return (default: 100).
     
     Returns:
-        JSON response with:
-            - events: List of event documents (newest first)
-            - count: Number of events returned
-            - latest_timestamp: Timestamp of newest event (for UI to track)
-    
-    Example:
-        GET /api/events
-        GET /api/events?since=2024-01-29 10:00:00 UTC
+        JSON: events, count, latest_id (for next poll; use after_id=latest_id).
     """
     try:
-        # Get optional query parameters
+        after_id = request.args.get("after_id", None)
         since_timestamp = request.args.get("since", None)
         limit = int(request.args.get("limit", 100))
         
-        # Retrieve events from MongoDB
-        events = get_events(since_timestamp=since_timestamp, limit=limit)
-        
-        # Get latest timestamp (for UI to track - prevents duplicates)
-        latest_timestamp = events[0].get("timestamp") if events else None
+        # Prefer after_id (cursor-based) so we never miss events
+        events, latest_id = get_events(
+            after_id=after_id,
+            since_timestamp=since_timestamp if not after_id else None,
+            limit=limit,
+        )
         
         return jsonify({
             "status": "success",
             "events": events,
             "count": len(events),
-            "latest_timestamp": latest_timestamp,
+            "latest_id": latest_id,
         }), 200
         
     except Exception as e:

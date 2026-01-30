@@ -66,6 +66,12 @@
             animation: pulse 2s infinite;
         }
 
+        .utc-note {
+            color: #6c757d;
+            font-size: 12px;
+            margin-left: 4px;
+        }
+
         @keyframes pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.5; }
@@ -156,6 +162,7 @@
             <div>
                 <span class="status-indicator"></span>
                 <span id="status-text">Polling every 15 seconds...</span>
+                <span class="utc-note"> · All times in UTC</span>
             </div>
             <div id="event-count">0 events</div>
         </div>
@@ -166,8 +173,8 @@
     </div>
 
     <script>
-        // Track latest timestamp to avoid showing duplicate events
-        let latestTimestamp = null;
+        // Track latest event id (cursor) to avoid duplicates and never miss events
+        let latestId = null;
         let events = [];
 
         /**
@@ -283,32 +290,35 @@
         }
 
         /**
-         * Fetch events from API
+         * Fetch events from API.
+         * Uses after_id (cursor) so new events always appear within 15s, even if
+         * GitHub sends out-of-order timestamps (e.g. PR after push).
          */
         async function fetchEvents() {
             try {
                 const statusText = document.getElementById('status-text');
                 statusText.textContent = 'Fetching events...';
 
-                // Build API URL with since parameter to avoid duplicates
                 let url = '/api/events';
-                if (latestTimestamp) {
-                    url += `?since=${encodeURIComponent(latestTimestamp)}`;
+                if (latestId) {
+                    url += `?after_id=${encodeURIComponent(latestId)}`;
                 }
 
                 const response = await fetch(url);
                 const data = await response.json();
 
                 if (data.status === 'success') {
-                    // Add new events to our list (avoid duplicates by checking request_id)
-                    const existingIds = new Set(events.map(e => e.request_id));
-                    const newEvents = data.events.filter(e => !existingIds.has(e.request_id));
-                    
+                    // Avoid duplicates by _id (same event can't be returned twice with after_id)
+                    const existingIds = new Set(events.map(e => e._id));
+                    const newEvents = data.events.filter(e => !existingIds.has(e._id));
                     events = [...events, ...newEvents];
 
-                    // Update latest timestamp for next poll
-                    if (data.latest_timestamp) {
-                        latestTimestamp = data.latest_timestamp;
+                    if (data.latest_id) {
+                        latestId = data.latest_id;
+                    } else if (data.events.length > 0) {
+                        // Fallback: use max _id from batch
+                        const ids = data.events.map(e => e._id);
+                        latestId = ids.reduce((a, b) => a > b ? a : b);
                     }
 
                     renderEvents();

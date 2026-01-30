@@ -7,7 +7,7 @@ Handles:
   - Merged PR events → MERGE action (brownie points)
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from constants import (
     ACTION_PUSH,
@@ -16,6 +16,26 @@ from constants import (
     GITHUB_EVENT_PUSH,
     GITHUB_EVENT_PULL_REQUEST,
 )
+
+
+def _timestamp_to_utc_str(timestamp_str):
+    """
+    Parse GitHub timestamp (ISO 8601) and return a single pattern: UTC string.
+    Ensures push and pull_request times are stored in the same UTC pattern.
+    """
+    if not timestamp_str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    # Handle Z and +00:00, and any other offset (e.g. +05:30)
+    s = timestamp_str.strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc)
+        else:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+    except Exception:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def parse_github_webhook(payload, event_type):
@@ -76,15 +96,8 @@ def _parse_push_event(payload):
         ref = payload.get("ref", "")
         branch_name = ref.replace("refs/heads/", "") if ref.startswith("refs/heads/") else ref
         
-        # Extract timestamp (GitHub provides ISO format, convert to UTC datetime string)
-        timestamp_str = head_commit.get("timestamp", "")
-        if timestamp_str:
-            # Parse GitHub's ISO timestamp and format as UTC datetime string
-            dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-            timestamp_utc = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-        else:
-            # Fallback to current UTC time
-            timestamp_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        # Extract timestamp: same UTC pattern for all event types
+        timestamp_utc = _timestamp_to_utc_str(head_commit.get("timestamp", ""))
         
         return {
             "request_id": commit_id[:40] if commit_id else "",  # Commit hash (40 chars)
@@ -145,15 +158,9 @@ def _parse_pull_request_event(payload):
         from_branch = pr.get("head", {}).get("ref", "")  # PR source branch
         to_branch = pr.get("base", {}).get("ref", "")    # PR target branch
         
-        # Extract timestamp (GitHub provides ISO format)
+        # Extract timestamp: same UTC pattern as push (always normalized to UTC)
         updated_at = pr.get("updated_at", "") or pr.get("created_at", "")
-        if updated_at:
-            # Parse ISO timestamp and format as UTC datetime string
-            dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-            timestamp_utc = dt.strftime("%Y-%m-%d %H:%M:%S UTC")
-        else:
-            # Fallback to current UTC time
-            timestamp_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp_utc = _timestamp_to_utc_str(updated_at)
         
         return {
             "request_id": request_id,
